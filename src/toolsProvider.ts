@@ -248,7 +248,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 	};
 
 	const visitWebsiteTool = tool({
-		name: "Visit Website (Needs user approval)",
+		name: "Unsafe Visit Website",
 		description: "Visit a non whitelisted website and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable.",
 		parameters: {
 			url: z.string().url().describe("The URL of the website to visit"),
@@ -285,7 +285,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 	});
 
 	const filteredVisitWebsiteTool = tool({
-		name: "Visit Website (Whitelisted domain)",
+		name: "Safe Visit Website",
 		description: "Visit a whitelisted website that belongs to whitelisted domain and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable. This should be prioritized than the other Visit Website tool.",
 		parameters: {
 			url: z.string().url().describe("The URL of the website to visit"),
