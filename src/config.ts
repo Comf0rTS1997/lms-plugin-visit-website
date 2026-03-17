@@ -36,5 +36,15 @@ export const configSchematics = createConfigSchematics()
 			subtitle: "Maximum text content size returned by the Visit Website tool (0 = Exclude text content, -1 = Auto)",
 		},
 		-1
-	)
-	.build();
+	).field(
+		"whitelistDomains",
+		"string",
+		{
+			displayName: "Whitelist Domains",
+			subtitle: "Subtitle", // Optional subtitle for the field. (Show below the field)
+			hint: "a list of domains, eg(lmstudio.ai,github.com)",
+			isParagraph: true, // Whether to show a large text input area for this field.
+			isProtected: false, // Whether the value should be obscured in the UI (e.g., for passwords).
+		},
+		"lmstudio.ai", // Default Value
+	).build();

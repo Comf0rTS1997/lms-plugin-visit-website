@@ -176,7 +176,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 	});
 
 	const visitWebsiteTool = tool({
-		name: "Visit Website",
+		name: "Visit Website (Needs user approval)",
 		description: "Visit a website and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable.",
 		parameters: {
 			url: z.string().url().describe("The URL of the website to visit"),
@@ -258,7 +258,125 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 		},
 	});
 
+	const filteredVisitWebsiteTool = tool({
+		name: "Visit Website (Whitelisted domain)",
+		description: "Visit a website that belongs to whitelisted domain and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable. This should be prioritized than the other Visit Website tool.",
+		parameters: {
+			url: z.string().url().describe("The URL of the website to visit"),
+			findInPage: z.array(z.string()).optional().describe("Highly recommended! Optional search terms to prioritize which links, images, and content to return."),
+			maxLinks: z.number().int().min(0).max(200).optional().describe("Maximum number of links to extract from the page."),
+			maxImages: z.number().int().min(0).max(200).optional().describe("Maximum number of images to extract from the page."),
+			contentLimit: z.number().int().min(0).max(10_000).optional().describe("Maximum text content length to extract from the page."),
+		},
+		implementation: async ({ url, maxLinks, maxImages, contentLimit, findInPage: searchTerms }, context) => {
+			const { status, warn, signal } = context;
+			status("Visiting website...");
 
+			try {
+				maxLinks = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxLinks"), -1)
+					?? maxLinks
+					?? 40;
+				maxImages = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxImages"), -1)
+					?? maxImages
+					?? 10;
+				contentLimit = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("contentLimit"), -1)
+					?? contentLimit
+					?? 2000;
+
+				const whitelistDomain = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("whitelistDomains"), "") as string | undefined;
+				if (whitelistDomain) {
+					const requestedHostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+					const allowed = whitelistDomain
+						.split(",")
+						.map((d: string) => d.trim().toLowerCase().replace(/^www\./, ""))
+						.filter((d: string) => d.length > 0)
+						.some((d: string) => requestedHostname === d || requestedHostname.endsWith("." + d));
+					if (!allowed) {
+						return `Error: domain is not whitelisted, try "Visit Website" tool.`;
+					}
+				}
+
+
+				const { head, body } = await fetchHTML(url, signal, warn);
+				status("Website visited successfully.");
+				
+				const title = head.match(/<title>([^<]*)<\/title>/)?.[1] || ""
+				const h1 = body.match(/<h1[^>]*>([^<]*)<\/h1>/)?.[1] || "";
+				const h2 = body.match(/<h2[^>]*>([^<]*)<\/h2>/)?.[1] || "";
+				const h3 = body.match(/<h3[^>]*>([^<]*)<\/h3>/)?.[1] || "";
+				const links = maxLinks && extractLinks(body, url, maxLinks, searchTerms);
+				const imagesToFetch = maxImages ? extractImages(body, url, maxImages, searchTerms) : [];
+				const images = maxImages &&
+					(await viewImagesTool.implementation({ imageURLs: imagesToFetch.map(x => x[1]) }, context) as string[])
+					.map((markdown, index) => [imagesToFetch[index][0], markdown] as [string, string]);
+
+				// fetch the text content from the body using DOMParser
+				const allContent = contentLimit && body
+					.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script tags
+					.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Remove style tags
+					.replace(/<[^>]+>/g, '') // Remove all HTML tags
+					.replace(/\s+/g, ' ') // Normalize whitespace
+					.trim() || '';
+				
+				let content = "";
+				if(searchTerms?.length && contentLimit < allContent.length) {
+					const padding = `.{0,${contentLimit / (searchTerms.length * 2)}}`;
+					const matches = searchTerms
+						.map(term => new RegExp(padding + term + padding, 'gi').exec(allContent))
+						.filter(match => !!match)
+						.sort((a, b) => a.index - b.index); // Sort by index in the content
+					let nextMinIndex = 0;
+					for(const match of matches) {
+						// Ensure we don't return duplicates by merging overlapping matches
+						content += match.index >= nextMinIndex
+							// The Match does not overlap with the previous one
+							? match[0]
+							// The match overlaps so we just extend the content to include it
+							: match[0].slice(nextMinIndex - match.index);
+						nextMinIndex = match.index + match[0].length;
+					}
+				}
+				else content = allContent.slice(0, contentLimit) // Limit text length
+					
+				return {
+					url, title, h1, h2, h3,
+					...(links ? { links } : {}),
+					...(images ? { images } : {}),
+					...(content ? { content } : {}),
+				};
+			} catch (error: any) {
+				if (error instanceof DOMException && error.name === "AbortError") {
+					return "Website visit aborted by user.";
+				}
+				console.error(error);
+				warn(`Error during website visit: ${error.message}`);
+				return `Error: ${error.message}`;
+			}
+		},
+	});
+
+	const getCurrentWhitelist = tool({
+		name: "Get Whitelist Domain",
+		description: "Get a string that represents all whitelisted domain you can use with Visit Website (Filtered) tool.",
+		parameters: { },
+		implementation: async ({}, context) => {
+			const { status, warn, signal } = context;
+			status("Visiting website...");
+
+			try {
+				const whitelistDomain = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("whitelistDomains"), "") as string | undefined;
+				return whitelistDomain;
+			} catch (error: any) {
+				console.error(error);
+				warn(`Error: ${error.message}`);
+				return `Error: ${error.message}`;
+			}
+		},
+	});
+
+
+	tools.push(getCurrentWhitelist);
+	tools.push(filteredVisitWebsiteTool);
 	tools.push(visitWebsiteTool);
 	tools.push(viewImagesTool);
 	return tools;
