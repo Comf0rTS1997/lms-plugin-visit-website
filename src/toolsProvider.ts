@@ -249,7 +249,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 
 	const visitWebsiteTool = tool({
 		name: "Visit Website (Needs user approval)",
-		description: "Visit a website and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable.",
+		description: "Visit a non whitelisted website and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable.",
 		parameters: {
 			url: z.string().url().describe("The URL of the website to visit"),
 			findInPage: z.array(z.string()).optional().describe("Highly recommended! Optional search terms to prioritize which links, images, and content to return."),
@@ -259,6 +259,19 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 		},
 		implementation: async ({ url, maxLinks, maxImages, contentLimit, findInPage: searchTerms }, context) => {
 			try {
+				const whitelistDomain = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("whitelistDomains"), "") as string | undefined;
+				if (whitelistDomain) {
+					const requestedHostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+					const allowed = whitelistDomain
+						.split(",")
+						.map((d: string) => d.trim().toLowerCase().replace(/^www\./, ""))
+						.filter((d: string) => d.length > 0)
+						.some((d: string) => requestedHostname === d || requestedHostname.endsWith("." + d));
+					if (allowed) {
+						return `Error: domain is whitelisted, try "Visit Website" tool.`;
+					}
+				}
+
 				return await visitWebsiteImpl({ url, maxLinks, maxImages, contentLimit, searchTerms }, context);
 			} catch (error: any) {
 				if (error instanceof DOMException && error.name === "AbortError") {
@@ -273,7 +286,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 
 	const filteredVisitWebsiteTool = tool({
 		name: "Visit Website (Whitelisted domain)",
-		description: "Visit a website that belongs to whitelisted domain and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable. This should be prioritized than the other Visit Website tool.",
+		description: "Visit a whitelisted website that belongs to whitelisted domain and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable. This should be prioritized than the other Visit Website tool.",
 		parameters: {
 			url: z.string().url().describe("The URL of the website to visit"),
 			findInPage: z.array(z.string()).optional().describe("Highly recommended! Optional search terms to prioritize which links, images, and content to return."),
