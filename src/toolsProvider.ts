@@ -175,6 +175,78 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 		}
 	});
 
+	const visitWebsiteImpl = async (
+		{ url, maxLinks, maxImages, contentLimit, searchTerms }: {
+			url: string;
+			maxLinks: number | undefined;
+			maxImages: number | undefined;
+			contentLimit: number | undefined;
+			searchTerms: string[] | undefined;
+		},
+		context: Parameters<typeof visitWebsiteTool.implementation>[1],
+	) => {
+		const { status, warn, signal } = context;
+		status("Visiting website...");
+
+		maxLinks = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxLinks"), -1)
+			?? maxLinks
+			?? 40;
+		maxImages = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxImages"), -1)
+			?? maxImages
+			?? 10;
+		contentLimit = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("contentLimit"), -1)
+			?? contentLimit
+			?? 2000;
+
+		const { head, body } = await fetchHTML(url, signal, warn);
+		status("Website visited successfully.");
+
+		const title = head.match(/<title>([^<]*)<\/title>/)?.[1] || ""
+		const h1 = body.match(/<h1[^>]*>([^<]*)<\/h1>/)?.[1] || "";
+		const h2 = body.match(/<h2[^>]*>([^<]*)<\/h2>/)?.[1] || "";
+		const h3 = body.match(/<h3[^>]*>([^<]*)<\/h3>/)?.[1] || "";
+		const links = maxLinks && extractLinks(body, url, maxLinks, searchTerms);
+		const imagesToFetch = maxImages ? extractImages(body, url, maxImages, searchTerms) : [];
+		const images = maxImages &&
+			(await viewImagesTool.implementation({ imageURLs: imagesToFetch.map(x => x[1]) }, context) as string[])
+			.map((markdown, index) => [imagesToFetch[index][0], markdown] as [string, string]);
+
+		// fetch the text content from the body using DOMParser
+		const allContent = contentLimit && body
+			.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script tags
+			.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Remove style tags
+			.replace(/<[^>]+>/g, '') // Remove all HTML tags
+			.replace(/\s+/g, ' ') // Normalize whitespace
+			.trim() || '';
+
+		let content = "";
+		if(searchTerms?.length && contentLimit < allContent.length) {
+			const padding = `.{0,${contentLimit / (searchTerms.length * 2)}}`;
+			const matches = searchTerms
+				.map(term => new RegExp(padding + term + padding, 'gi').exec(allContent))
+				.filter(match => !!match)
+				.sort((a, b) => a.index - b.index); // Sort by index in the content
+			let nextMinIndex = 0;
+			for(const match of matches) {
+				// Ensure we don't return duplicates by merging overlapping matches
+				content += match.index >= nextMinIndex
+					// The Match does not overlap with the previous one
+					? match[0]
+					// The match overlaps so we just extend the content to include it
+					: match[0].slice(nextMinIndex - match.index);
+				nextMinIndex = match.index + match[0].length;
+			}
+		}
+		else content = allContent.slice(0, contentLimit) // Limit text length
+
+		return {
+			url, title, h1, h2, h3,
+			...(links ? { links } : {}),
+			...(images ? { images } : {}),
+			...(content ? { content } : {}),
+		};
+	};
+
 	const visitWebsiteTool = tool({
 		name: "Visit Website (Needs user approval)",
 		description: "Visit a website and return its title, headings, links, images, and text content. Images are automatically downloaded and viewable.",
@@ -186,73 +258,14 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 			contentLimit: z.number().int().min(0).max(10_000).optional().describe("Maximum text content length to extract from the page."),
 		},
 		implementation: async ({ url, maxLinks, maxImages, contentLimit, findInPage: searchTerms }, context) => {
-			const { status, warn, signal } = context;
-			status("Visiting website...");
-
 			try {
-				maxLinks = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxLinks"), -1)
-					?? maxLinks
-					?? 40;
-				maxImages = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxImages"), -1)
-					?? maxImages
-					?? 10;
-				contentLimit = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("contentLimit"), -1)
-					?? contentLimit
-					?? 2000;
-
-				const { head, body } = await fetchHTML(url, signal, warn);
-				status("Website visited successfully.");
-				
-				const title = head.match(/<title>([^<]*)<\/title>/)?.[1] || ""
-				const h1 = body.match(/<h1[^>]*>([^<]*)<\/h1>/)?.[1] || "";
-				const h2 = body.match(/<h2[^>]*>([^<]*)<\/h2>/)?.[1] || "";
-				const h3 = body.match(/<h3[^>]*>([^<]*)<\/h3>/)?.[1] || "";
-				const links = maxLinks && extractLinks(body, url, maxLinks, searchTerms);
-				const imagesToFetch = maxImages ? extractImages(body, url, maxImages, searchTerms) : [];
-				const images = maxImages &&
-					(await viewImagesTool.implementation({ imageURLs: imagesToFetch.map(x => x[1]) }, context) as string[])
-					.map((markdown, index) => [imagesToFetch[index][0], markdown] as [string, string]);
-
-				// fetch the text content from the body using DOMParser
-				const allContent = contentLimit && body
-					.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script tags
-					.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Remove style tags
-					.replace(/<[^>]+>/g, '') // Remove all HTML tags
-					.replace(/\s+/g, ' ') // Normalize whitespace
-					.trim() || '';
-				
-				let content = "";
-				if(searchTerms?.length && contentLimit < allContent.length) {
-					const padding = `.{0,${contentLimit / (searchTerms.length * 2)}}`;
-					const matches = searchTerms
-						.map(term => new RegExp(padding + term + padding, 'gi').exec(allContent))
-						.filter(match => !!match)
-						.sort((a, b) => a.index - b.index); // Sort by index in the content
-					let nextMinIndex = 0;
-					for(const match of matches) {
-						// Ensure we don't return duplicates by merging overlapping matches
-						content += match.index >= nextMinIndex
-							// The Match does not overlap with the previous one
-							? match[0]
-							// The match overlaps so we just extend the content to include it
-							: match[0].slice(nextMinIndex - match.index);
-						nextMinIndex = match.index + match[0].length;
-					}
-				}
-				else content = allContent.slice(0, contentLimit) // Limit text length
-					
-				return {
-					url, title, h1, h2, h3,
-					...(links ? { links } : {}),
-					...(images ? { images } : {}),
-					...(content ? { content } : {}),
-				};
+				return await visitWebsiteImpl({ url, maxLinks, maxImages, contentLimit, searchTerms }, context);
 			} catch (error: any) {
 				if (error instanceof DOMException && error.name === "AbortError") {
 					return "Website visit aborted by user.";
 				}
 				console.error(error);
-				warn(`Error during website visit: ${error.message}`);
+				context.warn(`Error during website visit: ${error.message}`);
 				return `Error: ${error.message}`;
 			}
 		},
@@ -269,20 +282,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 			contentLimit: z.number().int().min(0).max(10_000).optional().describe("Maximum text content length to extract from the page."),
 		},
 		implementation: async ({ url, maxLinks, maxImages, contentLimit, findInPage: searchTerms }, context) => {
-			const { status, warn, signal } = context;
-			status("Visiting website...");
-
 			try {
-				maxLinks = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxLinks"), -1)
-					?? maxLinks
-					?? 40;
-				maxImages = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("maxImages"), -1)
-					?? maxImages
-					?? 10;
-				contentLimit = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("contentLimit"), -1)
-					?? contentLimit
-					?? 2000;
-
 				const whitelistDomain = undefinedIfAuto(ctl.getPluginConfig(configSchematics).get("whitelistDomains"), "") as string | undefined;
 				if (whitelistDomain) {
 					const requestedHostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
@@ -296,60 +296,13 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 					}
 				}
 
-
-				const { head, body } = await fetchHTML(url, signal, warn);
-				status("Website visited successfully.");
-				
-				const title = head.match(/<title>([^<]*)<\/title>/)?.[1] || ""
-				const h1 = body.match(/<h1[^>]*>([^<]*)<\/h1>/)?.[1] || "";
-				const h2 = body.match(/<h2[^>]*>([^<]*)<\/h2>/)?.[1] || "";
-				const h3 = body.match(/<h3[^>]*>([^<]*)<\/h3>/)?.[1] || "";
-				const links = maxLinks && extractLinks(body, url, maxLinks, searchTerms);
-				const imagesToFetch = maxImages ? extractImages(body, url, maxImages, searchTerms) : [];
-				const images = maxImages &&
-					(await viewImagesTool.implementation({ imageURLs: imagesToFetch.map(x => x[1]) }, context) as string[])
-					.map((markdown, index) => [imagesToFetch[index][0], markdown] as [string, string]);
-
-				// fetch the text content from the body using DOMParser
-				const allContent = contentLimit && body
-					.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script tags
-					.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Remove style tags
-					.replace(/<[^>]+>/g, '') // Remove all HTML tags
-					.replace(/\s+/g, ' ') // Normalize whitespace
-					.trim() || '';
-				
-				let content = "";
-				if(searchTerms?.length && contentLimit < allContent.length) {
-					const padding = `.{0,${contentLimit / (searchTerms.length * 2)}}`;
-					const matches = searchTerms
-						.map(term => new RegExp(padding + term + padding, 'gi').exec(allContent))
-						.filter(match => !!match)
-						.sort((a, b) => a.index - b.index); // Sort by index in the content
-					let nextMinIndex = 0;
-					for(const match of matches) {
-						// Ensure we don't return duplicates by merging overlapping matches
-						content += match.index >= nextMinIndex
-							// The Match does not overlap with the previous one
-							? match[0]
-							// The match overlaps so we just extend the content to include it
-							: match[0].slice(nextMinIndex - match.index);
-						nextMinIndex = match.index + match[0].length;
-					}
-				}
-				else content = allContent.slice(0, contentLimit) // Limit text length
-					
-				return {
-					url, title, h1, h2, h3,
-					...(links ? { links } : {}),
-					...(images ? { images } : {}),
-					...(content ? { content } : {}),
-				};
+				return await visitWebsiteImpl({ url, maxLinks, maxImages, contentLimit, searchTerms }, context);
 			} catch (error: any) {
 				if (error instanceof DOMException && error.name === "AbortError") {
 					return "Website visit aborted by user.";
 				}
 				console.error(error);
-				warn(`Error during website visit: ${error.message}`);
+				context.warn(`Error during website visit: ${error.message}`);
 				return `Error: ${error.message}`;
 			}
 		},
